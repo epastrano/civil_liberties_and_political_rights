@@ -1,0 +1,229 @@
+---
+title: "Final Project Part 2"
+author: "Elliana Pastrano"
+date: "2025-11-25"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library (WDI)
+library(car)
+library(pscl)
+library(caret)
+library(janitor)
+library(ggeffects)
+library(pROC)
+```
+
+```{r}
+#Read in Democracy scores from FreedomHouseIndex
+freedom_house <- read_csv("/Users/ellianapastrano/Downloads/All_data_FIW_2013_2025/FIW13-25-Table 1.csv", skip = 1) 
+
+#clean up FHI dataset so that the variables are renamed
+freedom_house <- freedom_house %>%
+  rename(
+    country = `Country/Territory`,
+    year = Edition,
+    pr_rating = `PR rating`,
+    cl_rating = `CL rating`,
+    region = Region
+  )
+
+#Get rid of territories
+freedom_house <- freedom_house %>%
+  filter(`C/T` == "c")
+
+#Clean FHI dataset so that it only has the columns I want and drop missing data
+freedom_house <- freedom_house %>%
+  dplyr::select(country, region, year, pr_rating, cl_rating) %>%
+  filter(year != 2025 & year != 2024 & !is.na(pr_rating) & !is.na(cl_rating))
+
+#View the summary and dataset of FHI
+view(freedom_house)
+summary(freedom_house)
+
+
+#ggsave("sepal boxplot.pdf", width = 4, height = 4, units = "in", dpi = 1500)
+```
+
+```{r}
+#Create list of variables that I want to check
+world_bank_var <- c("NY.GDP.PCAP.KD", "IT.NET.USER.ZS", "SE.SEC.CMPT.LO.ZS")
+
+#get the values of the variables that I want for the years that I have from FHI
+world_bank <- WDI(
+  country = "all",
+  indicator = world_bank_var,
+  start = 2013,
+  end = 2023,
+  extra = TRUE
+)
+
+world_bank <- world_bank %>%
+  rename(
+    gdp_pc = NY.GDP.PCAP.KD,
+    internet_users = IT.NET.USER.ZS,
+    education = SE.SEC.CMPT.LO.ZS
+  )
+
+world_bank <- world_bank %>%
+  dplyr::select(gdp_pc, internet_users, education, country, year)%>%
+  filter(!is.na(country), !is.na(year), gdp_pc < 150000)
+
+view(world_bank)
+summary(world_bank)
+```
+
+```{r}
+#merge the data
+ds <- freedom_house %>%
+  left_join(world_bank, by = c("country", "year"))
+
+#define north america countries
+north_america <- c(
+  "United States", "Canada", "Mexico", "Greenland",
+  "Bermuda", "Saint Pierre and Miquelon", "St. Kitts and Nevis", "St. Lucia", "St. Vincent and the Grenadines", "Jamaica", "Trinidad and Tobago", "Antigua and Barbuda", "Barbados",
+  "Grenada", "Barbados")
+
+#define south america countries
+south_america <- c(
+  "Argentina", "Bolivia", "Brazil", "Chile", "Colombia",
+  "Ecuador", "Guyana", "Paraguay", "Peru", "Suriname",
+  "Uruguay", "Venezuela", "French Guiana", "Dominican Republic", "Belize",
+  "Costa Rica", "Cuba", "Dominca", "Dominica","Dominican Republic", "El Salvador", "Guatemala",
+  "Honduras", "Panama")
+
+ds$region <- dplyr::case_when(
+  ds$country %in% north_america ~ "North America",
+  ds$country %in% south_america ~ "South America",
+  TRUE ~ ds$region)
+
+#create binary variable (0 is free to keep with low ratings being free)
+ds$cl_binary <- ifelse(ds$cl_rating <= 3, 0, 1)
+ds$cl_binary <- factor(ds$cl_binary, levels = c(0,1), labels = c("Free", "Not Free"))
+
+ds <- na.omit(ds)
+view(ds)
+```
+
+
+
+
+```{r}
+#Save dataset
+write.csv(ds, "cl_ds.csv", row.names = FALSE)
+```
+
+```{r}
+#Logit model
+logit_model <- glm(cl_binary ~ pr_rating + gdp_pc + internet_users + education  + region + year, 
+             data = ds, 
+             family = binomial(link="logit"))
+
+summary(logit_model)
+
+
+exp(coef(logit_model))
+exp(confint(logit_model))
+```
+## Statistical Tests for Logit Tests
+
+```{r}
+#Multicollinearity
+vif(logit_model)
+```
+
+```{r}
+#Influential Observations
+par(mfrow=c(2,2))
+plot(logit_model)
+```
+
+# Model Fit Tests
+```{r}
+#Likelihood ratio
+anova(logit_model, test = "Chisq")
+```
+
+
+```{r}
+#Coming up with McFadden R^2 (uses package pscl)
+pR2(logit_model)
+```
+
+```{r}
+#Classification Accuracy
+ds$pred_prob <- predict(logit_model, type = "response")
+```
+
+```{r}
+#Confusion Matrix (uses caret library)
+pred_class <- ifelse(ds$pred_prob > 0.5, "Not Free", "Free")
+caret::confusionMatrix(factor(pred_class), ds$cl_binary)
+```
+
+## Figures
+
+Tables
+```{r}
+#create table with region and percentages
+ds%>%tabyl(region)
+```
+```{r}
+#create table with pr ratings and number of countries and percentages
+ds%>%tabyl(pr_rating)
+```
+
+```{r}
+#create table with cl ratings and number of countries and percentages
+
+ds%>% tabyl(cl_binary)
+```
+
+```{r}
+#create table with cl ratings and number of free vs not free countries 
+
+ds%>% tabyl(region, cl_binary)
+```
+
+```{r}
+#graph of count of free countries form 2013-2023
+ggplot(ds, aes(region)) +
+  geom_bar(fill = "seagreen") +
+  labs(title = "Count of Free Countries From 2013-2023 by Region") +
+  theme_minimal(base_size = 10)
+```
+
+```{r}
+#graph of count of free vs not free countries form 2013-2023
+ggplot(ds, aes(region, fill = cl_binary)) +
+  geom_bar(position = "dodge") +
+  labs(title = "Civil Liberties Status by Region",
+       x = "Region", y = "Count of Countries", fill = "CL Category") +
+  theme_minimal(base_size = 10)
+ggsave("CL_stat_region_bar.pdf", width = 4, height = 4, units = "in", dpi = 1500)
+```
+```{r}
+#graph of proportion of free countries vs not free countries
+ggplot(ds, aes(cl_binary)) +
+  geom_bar(fill = "plum") +
+  labs(title = "Count of Free Countries to Not Free Countries",
+       x = "Civil Liberties") + 
+  theme_minimal(base_size = 10)
+
+ggsave("CL_BarGraph.pdf", width = 4, height = 4, units = "in", dpi = 1500)
+```
+
+```{r}
+#graph of proportion of free countries vs not free countries throughout the years
+
+ds$graph_year = round(ds$year, 0)
+ggplot(ds, aes(x = graph_year, fill = cl_binary)) +
+  geom_bar(position = "stack") +
+  labs(title = "Civil Liberties Status by Years",
+       x = "Year", y = "Count of Countries", fill = "CL Status") + 
+  theme_minimal(base_size = 10)
+```
+
